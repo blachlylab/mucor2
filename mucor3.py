@@ -2,6 +2,8 @@ import argparse
 import os
 import sys
 
+import pandas as pd
+
 # Local imports
 import annfield
 
@@ -20,8 +22,8 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('-a', '--annotation', action='append', help="Annotation field to include in output (default: all)")
-    parser.add_argument('-i', '--input', action='append', help="Input VCF file")
-    parser.add_argument('-o', '--output', help="Output file base name (CSV and XLSX)")
+    parser.add_argument('-i', '--input', action='append', help="Input VCF file (can specify more than once)")
+    parser.add_argument('-o', '--output', help="Output file base name (exclude extension)")
     args = parser.parse_args()
 
     # Prevalidate so as not to interrupt long-running procedure
@@ -34,7 +36,7 @@ def main():
         vcf_df = consume_vcf(fn)
         # TODO merge to main dataframe
 
-    # TODO subset on columns included in --annotation
+    # subset on columns included in --annotation
     if args.annotation:
         # TODO print diagnostic pre subset
         master_df = master_df[ args.annotation ]
@@ -42,9 +44,11 @@ def main():
 
     # TODO pivot and/or aggregate
     # Option 1, aggregate on location (+- X>Y change)
+    grouped = master_df.gruopby(by=['chr','pos','ref','alt'], as_index=True, sort=True)
+    
     # Option 2, aggregate on gene symbol from annotations
 
-    # TODO SHould we include any summary metrics (row wise or group wise) ?
+    # TODO SHould we generate any summary metrics (row wise or group wise) ?
 
     master_df.to_csv( args.output + ".csv" )
 
