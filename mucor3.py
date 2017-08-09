@@ -12,24 +12,13 @@ import multiprocessing as mp
 # Local imports
 from annfield import annfield
 
-#parses dictionary from vcf file into a dataframe
-def consume_vcf(fn: str, by_anno: bool):
-    frames = []
+#appends provided list with dictionary of a vcf rows with annotaions
+def consume_vcf(fn: str, by_anno: bool,frames: list):
+    print(strip_filename(fn))
     for record in vcf_transform(fn):
-        #if -b flag is used a row is created for each annotation in each row of
-        #the vcf file
-        if by_anno:
-            for i, ann in enumerate(record["INFO"]["ANN"]):
-                frames.append(copy.deepcopy(record))
-                id=len(frames)-1
-                frames[id].update(ann)
-                frames[id]["ann_id"]=i
-                del(frames[id]["INFO"]["ANN"])
-        #else one row in the vcf file is one row in the dataframe
-        else:
-            row=flatten_dict_to_str(record)
-            frames.append(row)
-    return pd.DataFrame(frames)
+        row=flatten_dict_to_str(record)
+        frames.append(row)
+    return frames
 
 #flatten lists in the dictionary into strings
 def flatten_dict_to_str(di: dict):
@@ -90,14 +79,29 @@ def vcf_transform(filename: str, metafile: str=None, json_array: bool=False) -> 
         # Iterate through the rows of VCF and print individual variant records
         if json_array: print("[")
         for record in vcf_reader:
-            yield get_vcf_record(record, metadata, json_array)
+            for anno in for_anno(record, metadata, json_array):
+                yield anno
         if json_array: print("    {}\n]") # deal with terminal comma
 
-def get_vcf_record(record: vcf.model._Record, metadata: dict, json_array=False) -> None:
+def for_anno(record: vcf.model._Record, metadata: dict, json_array=False):
+    #if there are annotations for a row in the vcf file
+    #individual rows are created for each annotation
+    if 'ANN' in record.INFO:
+        anno_raw = copy.deepcopy(record.INFO['ANN'])
+        del(record.INFO['ANN'])
+        for i,x in enumerate(annfield.decode(','.join(anno_raw))):
+            record_dict={}
+            record_dict["ann_id"]=i
+            record_dict.update(x)
+            yield get_vcf_record(record,metadata,copy.deepcopy(record_dict),json_array)
+    else:
+        yield get_vcf_record(record,metadata,copy.deepcopy(record_dict),json_array)
+
+
+def get_vcf_record(record: vcf.model._Record, metadata: dict, record_dict: dict, json_array: bool) -> None:
     """Parse a PyVCF record, which may contain multiple samples, and emit JSON"""
 
     # Reset with every VCF record (row)
-    record_dict = {}
     record_dict['type'] = 'variant_vcf'
     record_dict['CHROM'] = record.CHROM
     record_dict['POS'] = record.POS
@@ -118,10 +122,9 @@ def get_vcf_record(record: vcf.model._Record, metadata: dict, json_array=False) 
 
     # INFO field is common to vcf record;
     # processing should be in outer loop (now this function)
-    record_dict['INFO'] = {k:v for k,v in record.INFO.items() if v is not None}
-    if 'ANN' in record.INFO:
-        anno_raw = record.INFO['ANN']
-        record_dict['INFO']['ANN'] = [x for x in annfield.decode(','.join(anno_raw))]
+    for k,v in record.INFO.items():
+        if v is not None:
+            record_dict[k]=v
     if 'LOF' in record.INFO:
         # TODO decode LOF field (snpEff)
         pass
@@ -167,7 +170,6 @@ def valediction():
 
 def main():
     greeting()
-
     parser = argparse.ArgumentParser()
     parser.add_argument('-a', '--annotation', action='append', help="Annotation field to include in output (default: all)")
     parser.add_argument('-i', '--input',nargs="+", help="Input VCF file (can specify more than once)")
@@ -190,25 +192,25 @@ def main():
     #if multithreaded set up thread pool and execute
     if args.threads:
         pool=mp.Pool(processes=args.threads)
-        res=[pool.apply_async(consume_vcf, args=(fn,args.by_anno,)) for fn in args.input]
-        output=[p.get() for p in res]
-        master_df = pd.concat(output)
+        res=[pool.apply_async(consume_vcf, args=(fn,args.by_anno,[],)) for fn in args.input]
+        output=[x for p in res for x in p.get()]
+        master_df = pd.DataFrame(output)
     #else process files one at a time
     else:
         frames=[]
         for vcf_file in args.input:
-            vcf_df = consume_vcf(vcf_file,args.by_anno)
-            frames.append(vcf_df)
-        master_df = pd.concat(frames)
+            frames = consume_vcf(vcf_file,args.by_anno,frames)
+        master_df= pd.DataFrame(frames)
     # subset on columns included in --annotation
     if args.annotation:
         # TODO print diagnostic pre subset
         master_df = master_df[ args.annotation ]
         # TODO print diagnostic post subset
-    master_df.to_csv( args.output + "_master.tsv", sep="\t" )
     # TODO pivot and/or aggregate
     # Option 1, aggregate on location (+- X>Y change)
-    grouped = master_df.groupby(by=['CHROM','POS','REF','ALT'], as_index=True, sort=True)
+    master_df.set_index(["sample","CHROM","POS","REF","ALT","ann_id"], inplace=True)
+    #master_df.reset_index(inplace=True)
+    master_df.to_csv( args.output + "_master.tsv", sep="\t" )
 
     # Option 2, aggregate on gene symbol from annotations
 
