@@ -1,0 +1,19 @@
+{	
+	"PIVINDEX":["CHROM","POS","REF","ALT","gene_name","feature_id","hgvs_c","hgvs_p"],
+	"PIVON":["SAMPLE"],
+	"PIVVAL":["AF"],
+	"PIVFUNC":"",
+	"SELECT":
+	{
+		"EXACT":{"FILTER":["PASS"]},
+        "CONTAINS":{}
+	},
+	"DROP":
+	{
+        "EXACT":{},
+        "CONTAINS":{}
+	},	
+	"DROPNULL":["hgvs_c"],
+	"MASTERIDX":["CHROM","POS","REF","ALT","SAMPLE","feature_id"],
+	"DOMASTERIDX":true
+}
