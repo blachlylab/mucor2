@@ -6,12 +6,18 @@
 	"SELECT":
 	{
 		"EXACT":{"FILTER":["PASS"]},
-        "CONTAINS":{}
+        "CONTAINS":{},
+        "NUM":
+        {
+            "OP":[">"],
+            "COL":[["depth",100]]
+        },
+        "STAT":["AD_ALT1"]
 	},
 	"DROP":
 	{
         "EXACT":{},
-        "CONTAINS":{}
+        "CONTAINS":{"effect":["synonymous"]}
 	},	
 	"DROPNULL":["hgvs_c"],
 	"MASTERIDX":["CHROM","POS","REF","ALT","SAMPLE","feature_id"],

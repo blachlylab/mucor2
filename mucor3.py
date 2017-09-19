@@ -8,38 +8,55 @@ import copy
 import pandas as pd
 import multiprocessing as mp
 import numpy as np
+import time
+import operator as op
+import gzip
 # Local imports
 from annfield import annfield
+class VCFwork:
+    def __init__(self, filename,by_anno,merge_anno):
+        self.fn=filename
+        self.by_anno=by_anno
+        self.merge_anno=merge_anno
+
 
 def flatten(x):
     if type(x)==type([]):
         x=",".join(map(str,x))
     return x
 
-def VCF_to_lists(fn:str,combine:bool,by_anno:bool)->list:
+def VCF_to_lists(vcfwork:VCFwork)->list:
+    fn=vcfwork.fn
+    combine=vcfwork.merge_anno
+    by_anno=vcfwork.by_anno
     #start return array and import vcf
     ret=[]
-    f=open(fn,'r')
-    reader = vcf.VCFReader(f)
+    reader = vcf.VCFReader(filename=fn)
     #get format and info keys for header
     formats = list(reader.formats.keys())
     infos = sorted(list(reader.infos.keys()))
+    anntrue=False
     #remove ANN field
     for x in ['ANN']:
         if x in infos:
+            anntrue=True
             del infos[infos.index(x)]
     #Make header
     ret.append(["SAMPLE"] + ['CHROM', 'POS', 'REF', 'ALT', 'ID','FILTER']+\
-               ['info.' + x for x in infos]+formats)
+               ['info_' + x for x in infos]+formats)
+    if anntrue:
+        ret[0]=ret[0]+list(next(annfield.decode("|||||||||||||||")).keys())
     #loop over every row in vcf
     for record in reader:
-        info_row = [record.INFO.get(x, None) for x in infos]
+        info_row=[]
+        for x in infos:
+            info_row.append(str(record.INFO.get(x, "")))
         # if a row in the return array for every annotation
         # pass ANN to annfield
-        anns=[x for x in annfield.decode(",".join(record.INFO.get("ANN",None)))]
-        #append keys to header
-        if len(ret)==1:
-            ret[0]=ret[0]+list(anns[0].keys())
+        anns=[]
+        if anntrue:
+            for x in annfield.decode(",".join(record.INFO.get("ANN",None))):
+                anns.append(x)
         # for each sample make row to add
         fixed=[]
         for sample in record.samples:
@@ -48,89 +65,108 @@ def VCF_to_lists(fn:str,combine:bool,by_anno:bool)->list:
             gentype=getattr(sample.data, 'GT', None).split("/")
             if gentype[0]=='.':
                 continue
-            gentype=[int(x) for x in gentype]
-            alts=[allele for allele in gentype if allele != 0]
+            for i,x in enumerate(gentype):
+                gentype[i]=int(x)
+            alts=[]
+            for allele in gentype:
+                if allele != 0:
+                    alts.append(allele)
             #if row per annotation match annotation to allele
             for alt in alts:
                 ann_list=anns
                 if by_anno:
-                    ann_list=[x for x in anns if x["allele"]==str(record.ALT[alt-1])]
-                    #if combining annotations with same feature_id
+                    ann_list=[]
+                    for x in anns:
+                        if x["allele"]==str(record.ALT[alt-1]):
+                            ann_list.append(x)
                     #combine annotations
-                    if combine:
-                        ann_list=merge_annotations(ann_list,"feature_id")
-                else:
+                    ann_list=merge_annotations(ann_list,"feature_id")
+                elif anntrue:
                     ann_list=merge_annotations(ann_list,"allele")
-                fixed = [record.CHROM, record.POS, record.REF, str(record.ALT[alt-1]),
-                         record.ID]
+                #print(ann_list)
+                row.append(record.CHROM)
+                row.append(record.POS)
+                row.append(record.REF)
+                row.append(str(record.ALT[alt-1]))
+                row.append(record.ID)
                 record_filter=record.FILTER
                 if record_filter == []: record_filter = ['PASS']
                 # Format fields not present will simply end up "blank"
                 # in the output
-                row += fixed
-                row += [flatten(record_filter or '.')]
-                row += [flatten(x) for x in info_row]
-                row += [flatten(getattr(sample.data, x, None)) for x in formats]
+                row.append(flatten(record_filter or '.'))
+                for x in info_row:
+                    row.append(flatten(x))
+                for x in formats:
+                    row.append(flatten(getattr(sample.data, x, None)))
 
                 #add either ANN column or a row per annotation
                 #then submit to return array
-                for ann in ann_list:
-                    ret.append(row+[ann[key] for key in ann])
-    f.close()
+                if anns==[]:
+                    ret.append(row)
+                else:
+                    for ann in ann_list:
+                        ret.append(row+ann)
     return ret
-
-#appends provided list with a dictionaries of vcf rows
-
-
-#get metadata from vcf
-def getmeta(vcf_reader:vcf.model):
-    metadata = collections.OrderedDict()
-    metadata['infos'] = \
-        { k:vcf_reader.infos[k]._asdict() for k in vcf_reader.infos}
-    metadata['formats'] = \
-        { k:vcf_reader.formats[k]._asdict() for k in vcf_reader.formats}
-    return metadata
 
 
 #merge annotations with identical feature_ids/transcripts
 def merge_annotations(anns: list,merge_on:str)->list:
-    transcripts=[]
+    dictkeys=list(anns[0].keys())
+    keys={}
     #collect all unique transcripts
     for d in anns:
-        transcripts.append(d[merge_on])
-    if len(transcripts)==len(np.unique(transcripts)):
-        return anns
-    transcripts=np.unique(transcripts)
+        if d[merge_on] in keys:
+            for i,k in enumerate(dictkeys):
+                keys[d[merge_on]][i].append(d[k])
+        else:
+            keys[d[merge_on]]=[]
+            for i,k in enumerate(dictkeys):
+                keys[d[merge_on]].append([])
+                keys[d[merge_on]][i].append(d[k])
+    #sys.exit(0)
     ret=[]
-    #for each transcript collect keys
-    # of all annotations that contain the specified
-    #transcript
-    for ann in transcripts:
-        ds=[]
-        keys=[]
-        for d in anns:
-            keys=keys+list(d.keys())
-            if d[merge_on]==ann:
-                ds.append(d)
-        keys=np.unique(keys)
-        #merge all dictionaries with ann
-        #merge based on type
-        d={}
-        for k in keys:
-            k_list=[]
-            for d in ds:
-                if k in d:
-                    k_list.append(d[k])
-            k_list=np.unique(k_list)
-            if type(k_list[0])==str:
-                d[k]=";".join(k_list)
-            elif type(k_list[0])==list or len(k_list)>1:
-                d[k]=";".join(str(e)for e in k_list)
-            else:
-                d[k]=k_list[0]
-        ret.append(d)
+    for key in keys:
+        anns=keys[key]
+        if len(anns[0])>1:
+            for i,val in enumerate(anns):
+                anns[i]=";".join(np.unique(val))
+        else:
+            for i,key in enumerate(anns):
+                anns[i]=anns[i][0]
+        ret.append(anns)
     return ret
 
+def alter_table(master:pd.DataFrame,config_args:dict):
+    sub=master.copy()
+    ad=sub["AD"].str.split(",",expand=True).astype(int)
+    sub.insert(sub.columns.get_loc("AD"),"depth",ad.sum(axis=1))
+    for id in ad.columns:
+        id=int(id)
+        col=""
+        if id==0:
+            col="AD_WT"
+        else:
+            col="AD_ALT"+str(id)
+        sub.insert(sub.columns.get_loc("AD")+1+id,col,ad.iloc[:,id])
+    qss=sub["QSS"].str.split(",",expand=True).astype(int)
+    for id in qss.columns:
+        id=int(id)
+        col=""
+        if id==0:
+            col="QSS_WT"
+        else:
+            col="QSS_ALT"+str(id)
+        sub.insert(sub.columns.get_loc("QSS")+1+id,col,qss.iloc[:,id])
+    for id in ad.columns:
+        id=int(id)
+        col=""
+        if id==0:
+            col="QSS/AD_WT"
+        else:
+            col="QSS/AD_ALT"+str(id)
+        sub.insert(sub.columns.get_loc("QSS_ALT"+str(ad.columns[-1]))+1+id,col,qss.iloc[:,id]/ad.iloc[:,id])
+
+    return sub
 
 #filters dataframe based on config file
 def filter_table(master:pd.DataFrame,config_args:dict):
@@ -172,11 +208,21 @@ def filter_table(master:pd.DataFrame,config_args:dict):
     #for columns selected drop rows with specified values in columns
     for key,val in drop.items():
         sub=sub[~sub[key].str.match("|".join(val))]
+    for i,op in enumerate(config_args["SELECT"]["NUM"]["OP"]):
+        col1=config_args["SELECT"]["NUM"]["COL"][i][0]
+        col2=config_args["SELECT"]["NUM"]["COL"][i][1]
+        if type(col2)==int:
+            if op==">":
+                sub=sub[sub[col1]>col2]
+    for col in config_args["SELECT"]["STAT"]:
+        c=sub[col]
+        sub=sub[c>(c.mean()-(2*c.std()))]
+        sub=sub[c<(c.mean()+(2*c.std()))]
     return sub
-
 
 #pivot dataframe
 def pivot(master:pd.DataFrame,config_args:dict):
+    master[config_args["PIVINDEX"]] = master[config_args["PIVINDEX"]].fillna("")
     sub = master[config_args["PIVINDEX"]+config_args["PIVON"]+config_args["PIVVAL"]]
     if config_args["PIVFUNC"]=="":
         return pd.pivot_table(sub,index=config_args["PIVINDEX"],columns=config_args["PIVON"],
@@ -206,10 +252,10 @@ def set_piv_func(args):
 
 #prints pivoted dataframe
 def aggregate_data(sub:pd.DataFrame,args:argparse.ArgumentParser,config_args:dict):
-    sub.to_csv(args.output+"_subset.tsv",sep="\t")
+    write_dataframe(args.output+"_subset.tsv",sub,False)
     prot=pivot(sub,config_args)
     print('printing aggregate')
-    prot.to_csv(args.output+"_protsum.tsv",sep="\t")
+    write_dataframe(args.output+"_protsum.tsv",prot,False)
 
 
 #import vcf files into a dictionary either single-threaded or multithreaded
@@ -219,15 +265,19 @@ def import_files(args):
     if args.threads:
         print('importing files')
         pool=mp.Pool(processes=args.threads)
-        res=[pool.apply_async(VCF_to_lists, args=(fn,not args.dontcombine,args.by_anno)) for fn in args.input]
+        tasks=[VCFwork(fn,args.by_anno,not args.dontcombine) for fn in args.input]
+        res=pool.map_async(VCF_to_lists, tasks)
+        while (True):
+            if (res.ready()): break
+            remaining = res._number_left
+            print("\r{0:.2f}% imported".format(1-((remaining)/len(args.input))),end="")
+            time.sleep(0.5)
+        print()
+        res=res.get()
         output=[]
         for i,p in enumerate(res):
-            if i==0:
-                p=p.get()
-            else:
-                p=p.get()[1::]
-            print("{0:.2f}%".format((i+1)/len(args.input)),end="")
-            print(" imported",end="\r")
+            if i!=0:
+                p=p[1::]
             output+=p
         print('building dataframe')
         return pd.DataFrame(output[1::],columns=output[0])
@@ -237,13 +287,22 @@ def import_files(args):
         frames=[]
         for i,vcf_file in enumerate(args.input):
             if i==0:
-                frames+=VCF_to_lists(vcf_file,not args.dontcombine,args.by_anno)
+                frames+=VCF_to_lists(VCFwork(vcf_file,args.by_anno,not args.dontcombine))
             else:
-                frames+=VCF_to_lists(vcf_file,not args.dontcombine,args.by_anno)[1::]
+                frames+=VCF_to_lists(VCFwork(vcf_file,args.by_anno,not args.dontcombine))[1::]
             print("{0:.2f}%".format((i+1)/len(args.input)),end="")
             print(" imported",end="\r")
         print('building dataframe')
         return pd.DataFrame(frames[1::],columns=frames[0])
+
+def write_dataframe(fn:str,data:pd.DataFrame,hdf):
+    if hdf:
+        store = pd.HDFStore(fn)
+        store.put(fn,data,format="table",data_columns=True)
+        store.close()
+    else:
+        data.to_csv(fn,sep="\t")
+
 
 
 #TODO make config
@@ -268,6 +327,7 @@ def main():
     parser.add_argument('-mc', '--makeconfig',action='store_true', help="forms example config file")
     parser.add_argument('-dc','--dontcombine',action='store_true',
                         help="don't combine annotations with identical feature ids")
+    parser.add_argument('-nm','--nomaster',action='store_true',help="don't write master dataframe out to disk")
     args = parser.parse_args()
     if args.makeconfig:
         make_config(args)
@@ -282,20 +342,24 @@ def main():
         # TODO print diagnostic post subset
     # TODO pivot and/or aggregate
     # Option 1, aggregate on location (+- X>Y change)
-    print('printing master')
     if config_args["DOMASTERIDX"]:
         master_df.set_index(config_args["MASTERIDX"], inplace=True)
-        master_df.to_csv( args.output + "_master.tsv",sep="\t")
+        if not args.nomaster:
+            print('printing master')
+            write_dataframe(args.output + "_master.tsv",master_df,False)
         master_df.reset_index(inplace=True)
     else:
-        master_df.to_csv( args.output + "_master.tsv",sep="\t")
+        if not args.nomaster:
+            print('printing master')
+            write_dataframe(args.output + "_master.tsv",master_df,False)
 
 
     # Option 2, aggregate on gene symbol from annotations
 
     # TODO SHould we generate any summary metrics (row wise or group wise) ?
     print('filtering data')
-    sub=filter_table(master_df,config_args)
+    sub=alter_table(master_df,config_args)
+    sub=filter_table(sub,config_args)
     print('aggregating data')
     aggregate_data(sub,args,config_args)
     # TODO output summary JSON
